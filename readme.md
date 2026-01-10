@@ -1,32 +1,113 @@
-In this project, I will be handling one million records using different programming languages and different solutions on a small VM. The goal is to find the most efficient way to insert the records into MongoDB. Here is the environment:
+# Information
+MongoDB version: v8.0.17
+NodeJS version: v22.21.0
 
-Google Compute Engine
-- Machine type: e2-micro
-- CPU platform: Intel Broadwell
-- Architecture: x86/64
-- OS: Ubuntu 25.10 Minimal
-- vCPU: 0.25-2 vCPU (1 shared core)
-- Memory: 1 GB
-- Storage: 10GB
+I chose NodeJS because it's the programming language I'm most comfortable with.
 
-Equivalent code:
 ```
-// create the vm on gcp console
-gcloud compute instances create {vm_name} \
-    --project={project_id} \
-    --zone=us-central1-b \
-    --machine-type=e2-micro \
-    --network-interface=network-tier=PREMIUM,stack-type=IPV4_ONLY,subnet=default \
-    --maintenance-policy=MIGRATE \
-    --provisioning-model=STANDARD \
-    --create-disk=auto-delete=yes,boot=yes,device-name=free-tier-vm,image=projects/ubuntu-os-cloud/global/images/ubuntu-minimal-2510-questing-amd64-v20251217,mode=rw,size=10,type=pd-standard
+// install nodejs 
+sudo apt-get update
+sudo apt-get install -y curl
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+node -v
+
+// install mongodb
+sudo apt-get install -y gnupg
+curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | \
+   sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+sudo apt-get update
+sudo apt-get install -y mongodb-org
+sudo systemctl start mongod
+sudo systemctl enable mongod
+mongod --version
 ```
 
-And I'm using this dataset:
-Dataset: https://www.kaggle.com/datasets/abdulmajid115/yelp-dataset-contains-1-million-rows
+# Setup
 
-These are the programming languages i use:
-- Nodejs
-- Go
+Extract the dataset:
+```
+unzip yelp_database.csv.zip
+```
 
-I separate the solution with the programming language. Change the branch of this repository to see it.
+# Implementation Approaches
+
+Each test was performed in a clean state (VM rebooted) with a cleared database. The initial state had ~300MB of RAM usage.
+
+## main.js
+Loads the entire file into memory and inserts rows one-by-one.
+
+### Result
+After 2 minutes, the VM ran out of memory:
+```
+Started at: 1/10/2026, 9:04:20 PM
+---
+Connected to MongoDB
+
+<--- Last few GCs --->
+nt[2970:0x1ae64000]    20097 ms: Mark-Compact (reduce) 476.9 (486.1) -> 476.1 (486.3) MB, pooled: 0 MB, 442.22 / 0.00 ms  (+ 19.6 ms in 0 steps since start of marking, biggest step 0.0 ms, walltime since start of marking 474 ms) (average mu = 0.448, current[2970:0x1ae64000]    20930 ms: Mark-Compact (reduce) 477.0 (486.3) -> 476.6 (486.8) MB, pooled: 0 MB, 388.25 / 0.00 ms  (+ 66.3 ms in 0 steps since start of marking, biggest step 0.0 ms, walltime since start of marking 478 ms) (average mu = 0.451, current
+
+<--- JS stacktrace --->
+
+FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory
+```
+
+This approach is inefficient for large datasets because it tries to hold all records in memory simultaneously.
+
+## mainV2.js
+Uses streaming approach with batch processing of 1,000 records per batch.
+
+### Result
+
+![images folder](images/mainV2.js-usage.png)
+![images folder](images/mainV2.js-log.png)
+
+This approach successfully imports the data without memory issues.
+
+## mainV3.js
+Optimized batch processing with 10,000 records per batch (1% of total data).
+
+The batch size is calculated based on the data structure:
+```
+{
+    ID: '5',
+    Time_GMT: '3/12/2021 2:10',
+    Phone: '12562155510',
+    Organization: "Arby's",
+    OLF: '',
+    Rating: '2',
+    NumberReview: '7',
+    Category: 'Delivery',
+    Country: 'USA',
+    CountryCode: 'US',
+    State: 'AL',
+    City: 'Alexander City',
+    Street: ' 2593 Hwy',
+    Building: '2593'
+  }
+```
+
+Each record is approximately 200-345 bytes. With 10,000 records per batch:
+```
+10,000 × 345 = 3,450,000 bytes ≈ 3.45 MB per batch
+```
+
+Total batches needed:
+```
+1,000,000 / 10,000 = 100 batches
+```
+
+Estimated total memory usage:
+```
+100 × 3.45 = 345 MB
+```
+
+This fits comfortably within the 1GB RAM limit.
+
+### Result
+
+![images folder](images/mainV3.js-usage.png)
+![images folder](images/mainV3.js-log.png)
+
+This approach is faster than mainV2.js while maintaining similar memory usage.
